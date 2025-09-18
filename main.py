@@ -1,17 +1,27 @@
 import streamlit as st
-st.set_page_config(layout="wide")
+from streamlit_option_menu import option_menu
 import home
 import history
 
-st.sidebar.title("Navigation")
+st.set_page_config(layout="wide")
 
-nav = st.sidebar.radio(
-    "Go to",
-    ["🏠 Home", "ℹ️ History"],
-    label_visibility="collapsed"  # Hides the "Go to" label
-)
+st.markdown("""
+    <style>
+    [data-testid="stSidebar"] {display: block}
+    [data-testid="collapsedControl"] { display: block }
+    </style>
+    """, unsafe_allow_html=True)
 
-if nav == "🏠 Home":
+with st.sidebar:
+    selected = option_menu(
+        "Navigation",
+        ["Home", "History"],
+        icons=["house", "clock-history"],
+        menu_icon="cast",
+        default_index=0,
+    )
+
+if selected == "Home":
     home.show()
-elif nav == "ℹ️ History":
+elif selected == "History":
     history.show()
