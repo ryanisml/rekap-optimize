@@ -15,13 +15,13 @@ st.markdown("""
 with st.sidebar:
     selected = option_menu(
         "Navigation",
-        ["Home", "History"],
+        ["Metode K-Means", "Metode Agglomerative"],
         icons=["house", "clock-history"],
         menu_icon="cast",
         default_index=0,
     )
 
-if selected == "Home":
-    home.show()
-elif selected == "History":
-    history.show()
+if selected == "Metode K-Means":
+    home.main()
+elif selected == "Metode Agglomerative":
+    history.main()
