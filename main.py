@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_option_menu import option_menu
-import home
-import history
+import kmeans
+import agglomerative
 
 st.set_page_config(layout="wide")
 
@@ -22,6 +22,6 @@ with st.sidebar:
     )
 
 if selected == "Metode K-Means":
-    home.main()
+    kmeans.show()
 elif selected == "Metode Agglomerative":
-    history.main()
+    agglomerative.show()
