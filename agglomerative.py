@@ -1,13 +1,12 @@
-
 import io
 import numpy as np
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+from sklearn.cluster import AgglomerativeClustering
 
 @st.cache_data(show_spinner=False)
 def read_file(file, sheet_name=None):
@@ -32,19 +31,17 @@ def read_file(file, sheet_name=None):
         st.error(f"Gagal membaca file: {e}")
         return None, None
 
+
 def is_numeric_series(s):
     return pd.api.types.is_numeric_dtype(s)
+
 
 def get_default_features(df):
     if df is None:
         return []
-    candidates = [
-        "Sangat Kurang","Kurang","Berat Badan Normal","Risiko Lebih",
-        "Sangat Pendek","Pendek","Normal","Tinggi",
-        "Gizi Buruk","Gizi Kurang","Normal6","Risiko Gizi Lebih",
-        "Gizi Lebih","Obesitas","Stunting","Wasting","Underweight"
-    ]
+    candidates = ["Overweight","Stunting","Normal"]
     return [c for c in candidates if c in df.columns and is_numeric_series(df[c])]
+
 
 def to_excel_bytes(df_dict):
     buf = io.BytesIO()
@@ -54,24 +51,24 @@ def to_excel_bytes(df_dict):
     buf.seek(0)
     return buf
 
-def compute_silhouette_scores_agglomerative(X, k_max=10, linkage='ward'):
-    """Compute silhouette scores for AgglomerativeClustering for k=2..k_max."""
+
+def compute_scores_agglomerative(X, k_max=10, random_state=42, linkage_method='ward'):
     scores = []
-    max_k = min(k_max, len(X))
-    k_range = range(2, max_k + 1)
+    k_range = range(2, min(k_max, len(X)) + 1)
     for k in k_range:
         try:
-            model = AgglomerativeClustering(n_clusters=k, linkage=linkage)
-            labels = model.fit_predict(X)
-            sc = silhouette_score(X, labels)
+            ac = AgglomerativeClustering(n_clusters=k, linkage=linkage_method)
+            labels = ac.fit_predict(X)
+            sil = silhouette_score(X, labels)
         except Exception:
-            sc = np.nan
-        scores.append((k, sc))
+            sil = np.nan
+        scores.append((k, sil))
     return scores
+
 
 def show():
     st.title("🌳 Agglomerative Clustering")
-    st.caption("Analisis klaster hierarkis untuk data stunting/gizi — pilih fitur, tentukan jumlah klaster (atau otomatis), dan unduh hasil.")
+    st.caption("Analisis klaster untuk data stunting/gizi — pilih fitur, tentukan jumlah klaster (atau biarkan auto), dan unduh hasil.")
 
     with st.expander("📥 Upload Data", expanded=True):
         file = st.file_uploader("Unggah berkas (.csv / .xlsx)", type=["csv","xlsx"], accept_multiple_files=False)
@@ -99,10 +96,10 @@ def show():
         id_col = st.selectbox("Kolom identitas (opsional)", options=[None] + id_cols,
                               index=(0 if suggest_id is None else ([None] + id_cols).index(suggest_id)))
         scale = st.checkbox("Standarisasi fitur (StandardScaler)", value=True)
-        # Provide option to auto-select k using silhouette or manual k.
+        linkage_method = st.selectbox("Metode linkage", options=["ward","complete","average","single"], index=0)
         use_auto_k = st.checkbox("Pilih k otomatis menggunakan Silhouette (rentang 2-10)", value=True)
         k_manual = st.number_input("Jumlah cluster (k) jika tidak otomatis", min_value=2, max_value=20, value=2, step=1)
-        linkage = st.selectbox("Metode linkage (tidak ada dendrogram)", options=["ward", "complete", "average", "single"], index=0)
+        random_state = st.number_input("Random state (tidak berpengaruh pada Agglomerative)", value=42, step=1)
 
         work = df.copy()
         work = work.replace([np.inf, -np.inf], np.nan)
@@ -119,9 +116,43 @@ def show():
     else:
         X_scaled = X
 
-    # Determine k and compute silhouette scores for visualization
-    sils = compute_silhouette_scores_agglomerative(X_scaled, k_max=10, linkage=linkage)
-    sils_dict = {kk: s for kk, s in sils}
+    # Elbow-like: we still show WCSS using Ward (only valid for euclidean/ward)
+    st.subheader("🔍 Diagram Elbow (WCSS) — hanya relevan untuk linkage='ward'")
+    k_max_elbow = min(10, len(X))
+    k_range_elbow = list(range(1, k_max_elbow + 1))
+    wcss = []
+    for kk in k_range_elbow:
+        try:
+            if linkage_method == 'ward' and kk > 0:
+                # Use Agglomerative with ward to get sum of squared distances indirectly via cluster centers
+                ac_tmp = AgglomerativeClustering(n_clusters=kk, linkage=linkage_method)
+                labs_tmp = ac_tmp.fit_predict(X_scaled)
+                centers_tmp = np.vstack([X_scaled[labs_tmp == i].mean(axis=0) if (labs_tmp==i).sum()>0 else np.zeros(X_scaled.shape[1]) for i in range(kk)])
+                s = 0.0
+                for i in range(kk):
+                    mask = labs_tmp == i
+                    if mask.sum() > 0:
+                        s += ((X_scaled[mask] - centers_tmp[i]) ** 2).sum()
+                wcss.append(s)
+            else:
+                # fallback: use kmeans inertia as an approximation (only for plotting)
+                from sklearn.cluster import KMeans
+                km_tmp = KMeans(n_clusters=max(1, kk), random_state=int(random_state))
+                km_tmp.fit(X_scaled)
+                wcss.append(km_tmp.inertia_)
+        except Exception:
+            wcss.append(np.nan)
+    fig_elbow = plt.figure(figsize=(6,3.5))
+    plt.plot(k_range_elbow, wcss, marker='o')
+    plt.xticks(k_range_elbow)
+    plt.xlabel('k (jumlah cluster)')
+    plt.ylabel('WCSS (inertia / approx)')
+    plt.title('Elbow Plot: WCSS vs k (agglo)')
+    plt.grid(True)
+    st.pyplot(fig_elbow, use_container_width=True)
+
+    # Compute silhouette scores for k range
+    sils = compute_scores_agglomerative(X_scaled, k_max=10, random_state=int(random_state), linkage_method=linkage_method)
 
     if use_auto_k:
         sils_clean = [(kk, s) for kk, s in sils if not np.isnan(s)]
@@ -134,7 +165,32 @@ def show():
     else:
         k = int(k_manual)
 
-    # Show silhouette plot
+    # Davies-Bouldin index plot
+    st.subheader("📈 Davies-Bouldin Index untuk k = 2..10")
+    k_range_db = [kk for kk,_ in sils]
+    dbs = []
+    for kk in k_range_db:
+        try:
+            ac_tmp = AgglomerativeClustering(n_clusters=kk, linkage=linkage_method)
+            labs = ac_tmp.fit_predict(X_scaled)
+            db = davies_bouldin_score(X_scaled, labs)
+        except Exception:
+            db = np.nan
+        dbs.append(db)
+    fig_db = plt.figure(figsize=(6,3.5))
+    plt.plot(k_range_db, dbs, marker='o')
+    plt.xticks(k_range_db)
+    plt.xlabel("k (jumlah cluster)")
+    plt.ylabel("Davies-Bouldin index (lebih rendah lebih baik)")
+    plt.title("Davies-Bouldin Index per k")
+    plt.grid(True)
+    if k in k_range_db:
+        idx_db = k_range_db.index(k)
+        plt.scatter([k], [dbs[idx_db]], s=120, facecolors='none', edgecolors='black', linewidths=2, label=f"Chosen k = {k}")
+        plt.legend()
+    st.pyplot(fig_db, use_container_width=True)
+
+    # Silhouette plot
     st.subheader("📊 Silhouette Scores untuk k = 2..10")
     ks = [kk for kk, _ in sils]
     scores = [s for _, s in sils]
@@ -143,24 +199,24 @@ def show():
     plt.xticks(ks)
     plt.xlabel("k (jumlah cluster)")
     plt.ylabel("Silhouette score")
-    plt.title("Silhouette Score per k (Agglomerative)")
+    plt.title("Silhouette Score per k")
     plt.grid(True)
-    # highlight chosen k
     if k in ks:
         idx = ks.index(k)
         plt.scatter([ks[idx]], [scores[idx]], s=120, facecolors='none', edgecolors='black', linewidths=2, label=f"Chosen k = {k}")
         plt.legend()
     st.pyplot(fig_sil, use_container_width=True)
 
-    with st.spinner("Menjalankan Agglomerative dan PCA..."):
+    # Final Agglomerative clustering with chosen k
+    with st.spinner("Menjalankan AgglomerativeClustering dan PCA..."):
         try:
-            model = AgglomerativeClustering(n_clusters=k, linkage=linkage)
-            labels = model.fit_predict(X_scaled)
+            ac = AgglomerativeClustering(n_clusters=k, linkage=linkage_method)
+            labels = ac.fit_predict(X_scaled)
             pca = PCA(n_components=2)
             pcs = pca.fit_transform(X_scaled)
             st.success("Selesai.")
         except Exception as e:
-            st.error(f"Gagal menjalankan Agglomerative atau PCA: {e}")
+            st.error(f"Gagal menjalankan AgglomerativeClustering atau PCA: {e}")
             st.stop()
 
     out = df.copy()
@@ -203,6 +259,7 @@ def show():
     csv_buf = out.to_csv(index=False).encode("utf-8")
     st.download_button(label="Unduh CSV (data berlabel)", data=csv_buf,
                       file_name="agglomerative_labeled.csv", mime="text/csv", use_container_width=True)
+
 
 if __name__ == "__main__":
     st.write("Modul Agglomerative siap digunakan dalam aplikasi Streamlit utama.")
